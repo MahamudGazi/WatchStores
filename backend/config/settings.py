@@ -22,6 +22,12 @@ LOGGING = {
     },
 
     "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": "DEBUG",
+            "formatter": "standard",
+        },
+
         "info_file": {
             "level": "INFO",
             "class": "logging.FileHandler",
@@ -47,12 +53,28 @@ LOGGING = {
     "loggers": {
         "django": {
             "handlers": [
+                "console",
                 "info_file",
                 "warning_file",
                 "error_file",
             ],
             "level": "INFO",
-            "propagate": True,
+            "propagate": False,
+        },
+
+        "django.request": {
+            "handlers": [
+                "console",
+                "error_file",
+            ],
+            "level": "ERROR",
+            "propagate": False,
+        },
+
+        "django.server": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
         },
     },
 }
