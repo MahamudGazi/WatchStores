@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+/* Global responsive & overflow safety */
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  overflow-x: hidden;
+  min-height: 100dvh;
+}
+
+img,
+video {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Prevent long words from breaking layout on mobile */
+p, h1, h2, h3, h4, h5, h6, span, a, li {
+  overflow-wrap: anywhere;
+}
+
+/* Better touch targets on mobile */
+@media (max-width: 640px) {
+  button,
+  a,
+  [role="button"] {
+    min-height: 44px;
+  }
+}
+
+/* Hide horizontal scrollbar artifacts */
+* {
+  scrollbar-width: thin;
+}
+
+
+/* Admin tables: prevent horizontal page break on mobile */
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+@media (max-width: 768px) {
+  .admin-table-scroll,
+  main table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
