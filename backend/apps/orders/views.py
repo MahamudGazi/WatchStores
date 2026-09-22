@@ -371,8 +371,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                     )
 
                     try:
-                        coupon = Coupon.objects.get(
-                            code__iexact=coupon_code
+                        coupon = (
+                            Coupon.objects
+                            .select_for_update()
+                            .get(code__iexact=coupon_code)
                         )
                     except Coupon.DoesNotExist:
                         raise ValueError(
