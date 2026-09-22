@@ -1036,65 +1036,64 @@ class OrderViewSet(viewsets.ModelViewSet):
         pk=None,
     ):
 
-        order = self.get_object()
+        with transaction.atomic():
 
-        if not hasattr(
-            order,
-                "return_request",
-            ):
+            order = (
+                Order.objects
+                .select_for_update()
+                .get(pk=pk)
+            )
 
+            try:
+                return_request = (
+                    ReturnRequest.objects
+                    .select_for_update()
+                    .get(order=order)
+                )
+            except ReturnRequest.DoesNotExist:
                 return error_response(
-                    message=(
-                        "Return request not found."
-                    ),
+                    message="Return request not found.",
                     status=404,
                 )
 
-        return_request = (
-                order.return_request
+            if Refund.objects.filter(
+                return_request=return_request
+            ).exists():
+                return error_response(
+                    message="Refund already exists.",
+                    status=400,
+                )
+
+            if return_request.status != "Pending":
+                return error_response(
+                    message=(
+                        "Return request cannot be approved "
+                        f"because it is already "
+                        f"{return_request.status}."
+                    ),
+                    status=400,
+                )
+
+            return_request.status = "Approved"
+
+            return_request.save(
+                update_fields=["status"]
             )
 
-        if hasattr(
-                return_request,
-                "refund",
-            ):
-
-            return error_response(
-                message=(
-                    "Refund already exists."
-                ),
-                status=400,
+            refund = Refund.objects.create(
+                return_request=return_request,
+                amount=order.grand_total,
+                status="Completed",
+                refunded_at=timezone.now(),
             )
 
-        return_request.status = "Approved"
-
-        return_request.save(
-            update_fields=["status"]
-        )
-
-        refund = Refund.objects.create(
-            return_request=return_request,
-            amount=order.grand_total,
-            status="Completed",
-            refunded_at=timezone.now(),
-        )
-
-        serializer = RefundSerializer(
-            refund
-        )
+        serializer = RefundSerializer(refund)
 
         return success_response(
             data=serializer.data,
-            message=(
-                "Return request approved "
-                "successfully."
-            ),
+            message="Return request approved successfully.",
         )
-
-        # -------------------------------------------------
-        # REJECT RETURN
-        # -------------------------------------------------
-
+    
     @action(
         detail=True,
         methods=["post"],
