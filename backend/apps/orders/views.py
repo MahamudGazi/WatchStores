@@ -768,8 +768,6 @@ class OrderViewSet(viewsets.ModelViewSet):
     )
     def update_status(self, request, pk=None):
 
-        order = self.get_object()
-
         new_status = request.data.get("status")
 
         remarks = request.data.get(
@@ -795,34 +793,79 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        current_status = order.status
+        with transaction.atomic():
 
-        if new_status == current_status:
-            return Response(
-                {
-                    "error": (
-                        f"Order is already "
-                        f"{current_status}."
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
+            order = (
+                Order.objects
+                .select_for_update()
+                .get(pk=pk)
             )
 
-        order.status = new_status
+            current_status = order.status
 
-        order.save(
-            update_fields=["status"]
-        )
+            if new_status == current_status:
+                return Response(
+                    {
+                        "error": (
+                            f"Order is already "
+                            f"{current_status}."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        OrderStatusHistory.objects.create(
-            order=order,
-            status=new_status,
-            remarks=(
-                remarks
-                or f"Status changed to {new_status}"
-            ),
-            changed_by=request.user,
-        )
+            allowed_transitions = {
+                "Pending": {
+                    "Confirmed",
+                    "Cancelled",
+                },
+                "Confirmed": {
+                    "Processing",
+                    "Cancelled",
+                },
+                "Processing": {
+                    "Shipped",
+                },
+                "Shipped": {
+                    "Out for Delivery",
+                },
+                "Out for Delivery": {
+                    "Delivered",
+                },
+                "Delivered": set(),
+                "Cancelled": set(),
+            }
+
+            if new_status not in allowed_transitions.get(
+                current_status,
+                set(),
+            ):
+                return Response(
+                    {
+                        "error": (
+                            f"Cannot change order status "
+                            f"from {current_status} "
+                            f"to {new_status}."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            order.status = new_status
+
+            order.save(
+                update_fields=["status"]
+            )
+
+            OrderStatusHistory.objects.create(
+                order=order,
+                status=new_status,
+                remarks=(
+                    remarks
+                    or f"Status changed to {new_status}"
+                ),
+                changed_by=request.user,
+            )
 
         return success_response(
             data={
@@ -831,7 +874,6 @@ class OrderViewSet(viewsets.ModelViewSet):
             },
             message="Order status updated successfully.",
         )
-
 
     @action(
         detail=True,
