@@ -1232,49 +1232,49 @@ class OrderViewSet(viewsets.ModelViewSet):
     )
     def refund_summary(
         self,
-            request,
+        request,
     ):
 
-        total = Refund.objects.count()
-
-        completed = Refund.objects.filter(
-            status="Completed"
-        ).count()
-
-        pending = Refund.objects.filter(
-            status="Pending"
-        ).count()
-
-        rejected = Refund.objects.filter(
-            status="Rejected"
-        ).count()
+        summary = (
+            Refund.objects
+            .aggregate(
+                total=Count("id"),
+                completed=Count(
+                    "id",
+                    filter=Q(status="Completed"),
+                ),
+                pending=Count(
+                    "id",
+                    filter=Q(status="Pending"),
+                ),
+                rejected=Count(
+                    "id",
+                    filter=Q(status="Rejected"),
+                ),
+                total_amount=Sum(
+                    "amount",
+                    filter=Q(status="Completed"),
+                ),
+            )
+        )
 
         total_amount = (
-            Refund.objects
-            .filter(status="Completed")
-            .aggregate(
-                total=Sum("amount")
-            )
-            .get("total")
+            summary["total_amount"]
             or Decimal("0.00")
         )
 
         return success_response(
             data={
-                "total_refunds": total,
-                "completed": completed,
-                "pending": pending,
-                "rejected": rejected,
+                "total_refunds": summary["total"],
+                "completed": summary["completed"],
+                "pending": summary["pending"],
+                "rejected": summary["rejected"],
                 "total_amount": total_amount,
             },
             message=(
                 "Refund summary fetched successfully."
             ),
         )
-
-        # -------------------------------------------------
-        # MY ORDERS
-        # -------------------------------------------------
 
     @action(
         detail=False,
