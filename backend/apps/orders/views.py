@@ -5,7 +5,7 @@ import time
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Sum, Q, Count
+from django.db.models import Sum, Q, Count, F
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
@@ -1419,13 +1419,16 @@ class OrderViewSet(viewsets.ModelViewSet):
         order,
     ):
 
-        total = Decimal("0.00")
-
-        for item in order.items.all():
-            total += (
-                item.price
-                * item.quantity
+        total = (
+            order.items
+            .aggregate(
+                total=Sum(
+                    F("price") * F("quantity")
+                )
             )
+            .get("total")
+            or Decimal("0.00")
+        )
 
         # -----------------------------------------
         # SHIPPING CHARGE
