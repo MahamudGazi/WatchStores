@@ -1326,14 +1326,25 @@ class OrderViewSet(viewsets.ModelViewSet):
             .order_by("-created_at")
         )
 
-        serializer = self.get_serializer(
+        # -----------------------------------------
+        # PAGINATION
+        # -----------------------------------------
+
+        paginator = self.pagination_class()
+
+        page = paginator.paginate_queryset(
             orders,
+            request,
+            view=self,
+        )
+
+        serializer = self.get_serializer(
+            page,
             many=True,
         )
 
-        return success_response(
-            data=serializer.data,
-            message="My orders fetched successfully.",
+        return paginator.get_paginated_response(
+            serializer.data
         )
 
         # -------------------------------------------------
