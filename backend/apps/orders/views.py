@@ -156,6 +156,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             message="Order history fetched successfully.",
         )
 
+
     @action(
         detail=False,
         methods=["post"],
@@ -248,6 +249,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         # -------------------------------------------------
 
         payment_url = None
+
         try:
 
             with transaction.atomic():
@@ -330,7 +332,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                         price=price,
                     )
 
+                    # -------------------------------------
                     # STOCK
+                    # -------------------------------------
+
                     product.stock -= item.quantity
 
                     product.save(
@@ -341,6 +346,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                         price *
                         item.quantity
                     )
+
                 order.stock_deducted = True
 
                 order.save(
@@ -356,28 +362,43 @@ class OrderViewSet(viewsets.ModelViewSet):
                 discount_amount = Decimal("0.00")
 
                 if coupon_code:
-                    coupon_code = str(coupon_code).strip().upper()
+
+                    coupon_code = (
+                        str(coupon_code)
+                        .strip()
+                        .upper()
+                    )
 
                     try:
                         coupon = Coupon.objects.get(
                             code__iexact=coupon_code
                         )
                     except Coupon.DoesNotExist:
-                        raise ValueError("Invalid coupon code.")
+                        raise ValueError(
+                            "Invalid coupon code."
+                        )
 
                     now = timezone.now()
 
                     if not coupon.active:
-                        raise ValueError("This coupon is inactive.")
+                        raise ValueError(
+                            "This coupon is inactive."
+                        )
 
                     if now < coupon.valid_from:
-                        raise ValueError("This coupon is not active yet.")
+                        raise ValueError(
+                            "This coupon is not active yet."
+                        )
 
                     if now > coupon.valid_to:
-                        raise ValueError("This coupon has expired.")
+                        raise ValueError(
+                            "This coupon has expired."
+                        )
 
                     discount_amount = (
-                        total * Decimal(coupon.discount) / Decimal("100")
+                        total *
+                        Decimal(coupon.discount) /
+                        Decimal("100")
                     )
 
                     discount_amount = min(
@@ -430,66 +451,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                 )
 
                 # -----------------------------------------
-                # SSL COMMERZ
-                # -----------------------------------------
-
-                if payment_method == "SSL":
-
-                    try:
-
-                        ssl_start = time.perf_counter()
-
-                        ssl = create_ssl_session(order)
-
-                        logger.info(
-                            "SSL SESSION: %.3f sec",
-                            time.perf_counter() - ssl_start,
-                        )
-
-                        if not ssl:
-                            raise ValueError(
-                                "Payment gateway error."
-                            )
-
-                        if ssl.get("status") != "SUCCESS":
-
-                            logger.error(
-                                "SSL payment failed for order %s: %s",
-                                order.order_number,
-                                ssl,
-                            )
-
-                            raise ValueError(
-                                ssl.get(
-                                    "failedreason",
-                                    "Payment gateway error.",
-                                )
-                            )
-
-                        payment_url = ssl.get(
-                            "GatewayPageURL"
-                        )
-
-                        if not payment_url:
-                            raise ValueError(
-                                "Payment gateway did not return a payment URL."
-                            )
-
-                    except ValueError:
-                        raise
-
-                    except Exception as exc:
-
-                        logger.exception(
-                            "SSLCommerz error: %s",
-                            exc,
-                        )
-
-                        raise ValueError(
-                            "Payment gateway error."
-                        )
-
-                # -----------------------------------------
                 # CLEAR CART
                 # -----------------------------------------
 
@@ -517,32 +478,278 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=500,
             )
 
+        # =================================================
+        # SSL COMMERZ — OUTSIDE DATABASE TRANSACTION
+        # =================================================
+
+        if payment_method == "SSL":
+
+            try:
+
+                ssl_start = time.perf_counter()
+
+                ssl = create_ssl_session(order)
+
+                logger.info(
+                    "SSL SESSION: %.3f sec",
+                    time.perf_counter() - ssl_start,
+                )
+
+                if not ssl:
+                    raise ValueError(
+                        "Payment gateway error."
+                    )
+
+                if ssl.get("status") != "SUCCESS":
+
+                    logger.error(
+                        "SSL payment failed for order %s: %s",
+                        order.order_number,
+                        ssl,
+                    )
+
+                    raise ValueError(
+                        ssl.get(
+                            "failedreason",
+                            "Payment gateway error.",
+                        )
+                    )
+
+                payment_url = ssl.get(
+                    "GatewayPageURL"
+                )
+
+                if not payment_url:
+                    raise ValueError(
+                        "Payment gateway did not return a payment URL."
+                    )
+
+            except ValueError as exc:
+
+                logger.error(
+                    "SSLCommerz initiation failed for order %s: %s",
+                    order.order_number,
+                    exc,
+                )
+
+                # -----------------------------------------
+                # COMPENSATE FAILED SSL ORDER
+                # -----------------------------------------
+
+                try:
+
+                    with transaction.atomic():
+
+                        failed_order = (
+                            Order.objects
+                            .select_for_update()
+                            .get(pk=order.pk)
+                        )
+
+                        failed_payment = (
+                            Payment.objects
+                            .select_for_update()
+                            .get(order=failed_order)
+                        )
+
+                        if failed_order.stock_deducted:
+
+                            items = (
+                                failed_order.items
+                                .select_related("product")
+                                .order_by("product_id")
+                            )
+
+                            for item in items:
+
+                                product = (
+                                    Product.objects
+                                    .select_for_update()
+                                    .get(
+                                        pk=item.product_id
+                                    )
+                                )
+
+                                product.stock += item.quantity
+
+                                product.save(
+                                    update_fields=[
+                                        "stock"
+                                    ]
+                                )
+
+                            failed_order.stock_deducted = False
+
+                        failed_payment.status = "Failed"
+
+                        failed_payment.save(
+                            update_fields=[
+                                "status"
+                            ]
+                        )
+
+                        failed_order.status = "Cancelled"
+
+                        failed_order.save(
+                            update_fields=[
+                                "status",
+                                "stock_deducted",
+                                "updated_at",
+                            ]
+                        )
+
+                        OrderStatusHistory.objects.create(
+                            order=failed_order,
+                            status="Cancelled",
+                            remarks=(
+                                "SSLCommerz payment "
+                                "initiation failed."
+                            ),
+                            changed_by=request.user,
+                        )
+
+                except Exception:
+
+                    logger.exception(
+                        "Failed to compensate SSL order %s",
+                        order.order_number,
+                    )
+
+                return error_response(
+                    message=str(exc),
+                    status=400,
+                )
+
+            except Exception as exc:
+
+                logger.exception(
+                    "SSLCommerz error for order %s: %s",
+                    order.order_number,
+                    exc,
+                )
+
+                # -----------------------------------------
+                # COMPENSATE UNEXPECTED SSL FAILURE
+                # -----------------------------------------
+
+                try:
+
+                    with transaction.atomic():
+
+                        failed_order = (
+                            Order.objects
+                            .select_for_update()
+                            .get(pk=order.pk)
+                        )
+
+                        failed_payment = (
+                            Payment.objects
+                            .select_for_update()
+                            .get(order=failed_order)
+                        )
+
+                        if failed_order.stock_deducted:
+
+                            items = (
+                                failed_order.items
+                                .select_related("product")
+                                .order_by("product_id")
+                            )
+
+                            for item in items:
+
+                                product = (
+                                    Product.objects
+                                    .select_for_update()
+                                    .get(
+                                        pk=item.product_id
+                                    )
+                                )
+
+                                product.stock += item.quantity
+
+                                product.save(
+                                    update_fields=[
+                                        "stock"
+                                    ]
+                                )
+
+                            failed_order.stock_deducted = False
+
+                        failed_payment.status = "Failed"
+
+                        failed_payment.save(
+                            update_fields=[
+                                "status"
+                            ]
+                        )
+
+                        failed_order.status = "Cancelled"
+
+                        failed_order.save(
+                            update_fields=[
+                                "status",
+                                "stock_deducted",
+                                "updated_at",
+                            ]
+                        )
+
+                        OrderStatusHistory.objects.create(
+                            order=failed_order,
+                            status="Cancelled",
+                            remarks=(
+                                "SSLCommerz payment "
+                                "initiation failed."
+                            ),
+                            changed_by=request.user,
+                        )
+
+                except Exception:
+
+                    logger.exception(
+                        "Failed to compensate SSL order %s",
+                        order.order_number,
+                    )
+
+                return error_response(
+                    message="Payment gateway error.",
+                    status=400,
+                )
 
         # -------------------------------------------------
-        # BACKGROUND EMAIL + PDF (never block checkout if Redis down)
+        # BACKGROUND EMAIL + PDF
         # -------------------------------------------------
 
         def _send_confirmation():
+
             try:
+
                 send_order_confirmation_email.delay(
                     order.id,
                     invoice.id,
                     request.user.id,
                 )
+
             except Exception:
+
                 try:
+
                     send_order_confirmation_email(
                         order.id,
                         invoice.id,
                         request.user.id,
                     )
+
                 except Exception as mail_exc:
+
                     logger.warning(
                         "Order confirmation email skipped: %s",
                         mail_exc,
                     )
 
-        transaction.on_commit(_send_confirmation)
+        transaction.on_commit(
+            _send_confirmation
+        )
 
         # -------------------------------------------------
         # TOTAL TIME
@@ -566,7 +773,6 @@ class OrderViewSet(viewsets.ModelViewSet):
             message="Order placed successfully.",
             status=201,
         )
-
 
     @action(
         detail=False,
