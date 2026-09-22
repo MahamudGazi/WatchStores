@@ -1593,6 +1593,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                 order = (
                     Order.objects
                     .select_for_update()
+                    .select_related(
+                        "shipping_address",
+                        "coupon",
+                    )
                     .get(pk=pk)
                 )
 
