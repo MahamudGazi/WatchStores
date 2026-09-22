@@ -2,6 +2,8 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth import authenticate
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 User = get_user_model()
 
@@ -11,7 +13,14 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["username", "email", "password", "phone"]
+        fields = [
+            "username",
+            "first_name",
+            "last_name",
+            "email",
+            "password",
+            "phone",
+        ]
 
     def create(self, validated_data):
         password = validated_data.pop("password")
@@ -181,3 +190,44 @@ class ChangePasswordSerializer(serializers.Serializer):
                 {"new_password_confirm": "Passwords do not match."}
             )
         return attrs
+
+
+class EmailOrUsernameTokenObtainPairSerializer(TokenObtainPairSerializer):
+    username_field = "username"
+
+    def validate(self, attrs):
+        username_or_email = attrs.get("username")
+        password = attrs.get("password")
+
+        user = authenticate(
+            username=username_or_email,
+            password=password,
+        )
+
+        if user is None:
+            try:
+                user_obj = User.objects.get(
+                    email__iexact=username_or_email
+                )
+            except User.DoesNotExist:
+                user_obj = None
+
+            if user_obj is not None:
+                user = authenticate(
+                    username=user_obj.username,
+                    password=password,
+                )
+
+        if user is None:
+            raise serializers.ValidationError(
+                "No active account found with the given credentials."
+            )
+
+        data = super().validate(
+            {
+                "username": user.username,
+                "password": password,
+            }
+        )
+
+        return data

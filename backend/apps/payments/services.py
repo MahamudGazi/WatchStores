@@ -50,7 +50,6 @@ def create_ssl_session(order):
 
         "store_passwd": settings.SSL_STORE_PASSWORD,
 
-
         # -------------------------------------------------
         # ORDER INFORMATION
         # -------------------------------------------------
@@ -61,13 +60,8 @@ def create_ssl_session(order):
 
         "tran_id": order.order_number,
 
-
         # -------------------------------------------------
-        # BACKEND CALLBACK URLs
-        #
-        # SSLCommerz will POST payment result here.
-        # Django will verify the payment and then redirect
-        # the customer to React frontend.
+        # CALLBACK URLs
         # -------------------------------------------------
 
         "success_url": (
@@ -82,15 +76,9 @@ def create_ssl_session(order):
             f"{backend_url}/api/payments/cancel/"
         ),
 
-
-        # -------------------------------------------------
-        # SERVER-TO-SERVER IPN
-        # -------------------------------------------------
-
         "ipn_url": (
             f"{backend_url}/api/payments/ipn/"
         ),
-
 
         # -------------------------------------------------
         # PRODUCT INFORMATION
@@ -101,7 +89,6 @@ def create_ssl_session(order):
         "product_category": "Watch",
 
         "product_profile": "general",
-
 
         # -------------------------------------------------
         # CUSTOMER INFORMATION
@@ -131,7 +118,6 @@ def create_ssl_session(order):
 
         "cus_country": "Bangladesh",
 
-
         # -------------------------------------------------
         # SHIPPING INFORMATION
         # -------------------------------------------------
@@ -155,7 +141,6 @@ def create_ssl_session(order):
 
         "shipping_method": "NO",
     }
-
 
     # -----------------------------------------------------
     # CREATE SSL SESSION
@@ -184,15 +169,12 @@ def validate_payment(val_id):
 
         "store_id": settings.SSL_STORE_ID,
 
-        "store_passwd": (
-            settings.SSL_STORE_PASSWORD
-        ),
+        "store_passwd": settings.SSL_STORE_PASSWORD,
 
         "v": 1,
 
         "format": "json",
     }
-
 
     response = requests.get(
         VALIDATION_URL,
@@ -206,61 +188,18 @@ def validate_payment(val_id):
 
 
 # =========================================================
-# BKASH
+# UNSUPPORTED PAYMENT GATEWAYS
 # =========================================================
-
-def create_bkash_payment(order):
-
-    backend_url = settings.BASE_URL.rstrip("/")
-
-    return {
-
-        "success": True,
-
-        "payment_id": (
-            f"BKASH-{order.order_number}"
-        ),
-
-        "payment_url": (
-            f"{backend_url}"
-            "/api/payments/bkash/callback/"
-            f"?order={order.order_number}"
-        ),
-    }
-
 
 def verify_bkash_payment(payment_id):
 
     return {
-
-        "success": True,
-
-        "status": "Completed",
-
+        "success": False,
+        "status": "NotImplemented",
         "payment_id": payment_id,
-    }
-
-
-# =========================================================
-# NAGAD
-# =========================================================
-
-def create_nagad_payment(order):
-
-    backend_url = settings.BASE_URL.rstrip("/")
-
-    return {
-
-        "success": True,
-
-        "payment_id": (
-            f"NAGAD-{order.order_number}"
-        ),
-
-        "payment_url": (
-            f"{backend_url}"
-            "/api/payments/nagad/callback/"
-            f"?order={order.order_number}"
+        "error": (
+            "bKash payment verification "
+            "is not configured."
         ),
     }
 
@@ -268,10 +207,84 @@ def create_nagad_payment(order):
 def verify_nagad_payment(payment_id):
 
     return {
-
-        "success": True,
-
-        "status": "Completed",
-
+        "success": False,
+        "status": "NotImplemented",
         "payment_id": payment_id,
+        "error": (
+            "Nagad payment verification "
+            "is not configured."
+        ),
     }
+
+
+
+# =========================================================
+# BKASH
+# =========================================================
+
+# def create_bkash_payment(order):
+
+#     backend_url = settings.BASE_URL.rstrip("/")
+
+#     return {
+
+#         "success": True,
+
+#         "payment_id": (
+#             f"BKASH-{order.order_number}"
+#         ),
+
+#         "payment_url": (
+#             f"{backend_url}"
+#             "/api/payments/bkash/callback/"
+#             f"?order={order.order_number}"
+#         ),
+#     }
+
+
+# def verify_bkash_payment(payment_id):
+
+#     return {
+
+#         "success": True,
+
+#         "status": "Completed",
+
+#         "payment_id": payment_id,
+#     }
+
+
+# =========================================================
+# NAGAD
+# =========================================================
+
+# def create_nagad_payment(order):
+
+#     backend_url = settings.BASE_URL.rstrip("/")
+
+#     return {
+
+#         "success": True,
+
+#         "payment_id": (
+#             f"NAGAD-{order.order_number}"
+#         ),
+
+#         "payment_url": (
+#             f"{backend_url}"
+#             "/api/payments/nagad/callback/"
+#             f"?order={order.order_number}"
+#         ),
+#     }
+
+
+# def verify_nagad_payment(payment_id):
+
+#     return {
+
+#         "success": True,
+
+#         "status": "Completed",
+
+#         "payment_id": payment_id,
+#     }

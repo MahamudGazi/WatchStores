@@ -4,6 +4,7 @@ from django.db import models
 from apps.products.models import Product
 from apps.coupons.models import Coupon
 from apps.shipping.models import ShippingAddress
+from apps.orders.validators import validate_return_image
 
 
 PAYMENT = (
@@ -63,6 +64,12 @@ class Order(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
+    )
+
+    discount_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
     )
 
     total_price = models.DecimalField(
@@ -281,7 +288,8 @@ class ReturnRequestImage(models.Model):
     )
 
     image = models.ImageField(
-        upload_to="returns/"
+        upload_to="returns/",
+        validators=[validate_return_image],
     )
 
     uploaded_at = models.DateTimeField(

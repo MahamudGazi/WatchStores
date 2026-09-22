@@ -1,11 +1,14 @@
 import random
+
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import make_password, check_password
 from django.contrib.auth.models import Group
 from django.core.mail import send_mail
 from django.conf import settings
 from django.utils import timezone
+
 from rest_framework import generics, status, filters, viewsets, serializers
 from rest_framework.decorators import action
 from django_filters.rest_framework import DjangoFilterBackend
@@ -13,11 +16,17 @@ from apps.core.permissions import IsSuperAdmin
 
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
-from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
-from apps.core.throttles import LoginRateThrottle
+from apps.core.throttles import (
+    LoginRateThrottle,
+    PasswordResetOTPThrottle,
+    PasswordResetResendThrottle,
+    EmailVerificationOTPThrottle,
+    EmailVerificationResendThrottle,
+)
+
 from .serializers import (
     ChangePasswordSerializer,
     RegisterSerializer,
@@ -26,25 +35,37 @@ from .serializers import (
     EmailVerifySerializer,
     AdminUserSerializer,
     AdminCreateUserSerializer,
+    EmailOrUsernameTokenObtainPairSerializer,
 )
 
 User = get_user_model()
 
+
 def _generate_otp():
     return f"{random.randint(100000, 999999)}"
 
+
 def _send_otp_email(user, purpose="verification"):
     otp = _generate_otp()
-    user.email_otp = otp
+
+    user.email_otp = make_password(otp)
     user.email_otp_created_at = timezone.now()
-    user.save(update_fields=["email_otp", "email_otp_created_at"])
+
+    user.save(
+        update_fields=[
+            "email_otp",
+            "email_otp_created_at",
+        ]
+    )
 
     subject = (
         "WatchStore – Email Verification"
         if purpose == "verification"
         else "WatchStore – Password Reset OTP"
     )
+
     message = f"Your OTP is: {otp}\nValid for 15 minutes."
+
     try:
         send_mail(
             subject,
@@ -55,7 +76,10 @@ def _send_otp_email(user, purpose="verification"):
         )
     except Exception:
         pass
+
     return otp
+
+
 class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -82,113 +106,228 @@ class ProfileView(APIView):
             "is_staff": u.is_staff,
             "role": role,
         })
+
+
 class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
     permission_classes = [AllowAny]
 
     def perform_create(self, serializer):
         user = serializer.save()
+
         if user.email:
-            _send_otp_email(user, purpose="verification")
+            _send_otp_email(
+                user,
+                purpose="verification",
+            )
+
+
 class LoginView(TokenObtainPairView):
+    serializer_class = EmailOrUsernameTokenObtainPairSerializer
     throttle_classes = [LoginRateThrottle]
+
+
 class PasswordResetRequestView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetResendThrottle]
 
     def post(self, request):
-        ser = PasswordResetRequestSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
+        ser = PasswordResetRequestSerializer(
+            data=request.data
+        )
+
+        ser.is_valid(
+            raise_exception=True
+        )
+
         email = ser.validated_data["email"]
+
         try:
-            user = User.objects.get(email__iexact=email)
-            _send_otp_email(user, purpose="reset")
+            user = User.objects.get(
+                email__iexact=email
+            )
+
+            _send_otp_email(
+                user,
+                purpose="reset",
+            )
+
         except User.DoesNotExist:
             pass
-        # Always same message (don't leak existence)
+
+        # Always same message
+        # Don't leak email existence
         return Response({
             "success": True,
             "message": "If this email exists, an OTP has been sent.",
         })
+
+
 class PasswordResetConfirmView(APIView):
     permission_classes = [AllowAny]
+    throttle_classes = [PasswordResetOTPThrottle]
 
     def post(self, request):
-        ser = PasswordResetConfirmSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
+        ser = PasswordResetConfirmSerializer(
+            data=request.data
+        )
+
+        ser.is_valid(
+            raise_exception=True
+        )
+
         email = ser.validated_data["email"]
         otp = ser.validated_data["otp"]
         new_password = ser.validated_data["new_password"]
 
         try:
-            user = User.objects.get(email__iexact=email)
+            user = User.objects.get(
+                email__iexact=email
+            )
+
         except User.DoesNotExist:
             return Response(
-                {"success": False, "message": "Invalid email or OTP."},
+                {
+                    "success": False,
+                    "message": "Invalid email or OTP.",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not user.email_otp or user.email_otp != otp:
+        if not user.email_otp or not check_password(otp, user.email_otp):
             return Response(
-                {"success": False, "message": "Invalid OTP."},
+                {
+                    "success": False,
+                    "message": "Invalid OTP.",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not user.email_otp_created_at or (
-            timezone.now() - user.email_otp_created_at > timedelta(minutes=15)
+        if (
+            not user.email_otp_created_at
+            or (
+                timezone.now()
+                - user.email_otp_created_at
+                > timedelta(minutes=15)
+            )
         ):
             return Response(
-                {"success": False, "message": "OTP expired."},
+                {
+                    "success": False,
+                    "message": "OTP expired.",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         user.set_password(new_password)
+
         user.email_otp = ""
         user.email_otp_created_at = None
-        user.save()
+
+        user.save(
+            update_fields=[
+                "password",
+                "email_otp",
+                "email_otp_created_at",
+            ]
+        )
+
         return Response({
             "success": True,
             "message": "Password reset successfully.",
         })
+
+
 class SendEmailVerificationView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [EmailVerificationResendThrottle]
 
     def post(self, request):
         if request.user.is_email_verified:
-            return Response({"success": True, "message": "Already verified."})
+            return Response({
+                "success": True,
+                "message": "Already verified.",
+            })
+
         if not request.user.email:
             return Response(
-                {"success": False, "message": "No email on account."},
+                {
+                    "success": False,
+                    "message": "No email on account.",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        _send_otp_email(request.user, purpose="verification")
-        return Response({"success": True, "message": "OTP sent to your email."})
+
+        _send_otp_email(
+            request.user,
+            purpose="verification",
+        )
+
+        return Response({
+            "success": True,
+            "message": "OTP sent to your email.",
+        })
+
+
 class VerifyEmailView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [EmailVerificationOTPThrottle]
 
     def post(self, request):
-        ser = EmailVerifySerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
+        ser = EmailVerifySerializer(
+            data=request.data
+        )
+
+        ser.is_valid(
+            raise_exception=True
+        )
+
         otp = ser.validated_data["otp"]
         user = request.user
 
-        if not user.email_otp or user.email_otp != otp:
+        if not user.email_otp or not check_password(otp, user.email_otp):
             return Response(
-                {"success": False, "message": "Invalid OTP."},
+                {
+                    "success": False,
+                    "message": "Invalid OTP.",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if not user.email_otp_created_at or (
-            timezone.now() - user.email_otp_created_at > timedelta(minutes=15)
+
+        if (
+            not user.email_otp_created_at
+            or (
+                timezone.now()
+                - user.email_otp_created_at
+                > timedelta(minutes=15)
+            )
         ):
             return Response(
-                {"success": False, "message": "OTP expired."},
+                {
+                    "success": False,
+                    "message": "OTP expired.",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         user.is_email_verified = True
         user.email_otp = ""
         user.email_otp_created_at = None
-        user.save()
-        return Response({"success": True, "message": "Email verified."})
+
+        user.save(
+            update_fields=[
+                "is_email_verified",
+                "email_otp",
+                "email_otp_created_at",
+            ]
+        )
+
+        return Response({
+            "success": True,
+            "message": "Email verified.",
+        })
+
+
 class AdminUserViewSet(viewsets.ModelViewSet):
     """
     Super Admin only user management API.
@@ -202,6 +341,7 @@ class AdminUserViewSet(viewsets.ModelViewSet):
     - Delete user
     - Change role
     """
+
     queryset = (
         User.objects
         .all()
@@ -373,11 +513,10 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         # Remove existing role groups
         user.groups.remove(
             admin_group,
-            staff_group
+            staff_group,
         )
 
         if role == "ADMIN":
-
             user.is_staff = True
 
             user.groups.add(
@@ -385,7 +524,6 @@ class AdminUserViewSet(viewsets.ModelViewSet):
             )
 
         elif role == "STAFF":
-
             user.is_staff = True
 
             user.groups.add(
@@ -393,7 +531,6 @@ class AdminUserViewSet(viewsets.ModelViewSet):
             )
 
         elif role == "CUSTOMER":
-
             user.is_staff = False
 
         user.save(
@@ -425,23 +562,42 @@ class ChangePasswordView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        serializer = ChangePasswordSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        serializer = ChangePasswordSerializer(
+            data=request.data
+        )
+
+        serializer.is_valid(
+            raise_exception=True
+        )
 
         user = request.user
-        old_password = serializer.validated_data["old_password"]
-        new_password = serializer.validated_data["new_password"]
+
+        old_password = serializer.validated_data[
+            "old_password"
+        ]
+
+        new_password = serializer.validated_data[
+            "new_password"
+        ]
 
         if not user.check_password(old_password):
             return Response(
-                {"detail": "Old password is incorrect."},
+                {
+                    "detail": "Old password is incorrect."
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         user.set_password(new_password)
-        user.save(update_fields=["password"])
+
+        user.save(
+            update_fields=["password"]
+        )
 
         return Response(
-            {"success": True, "message": "Password changed successfully."},
+            {
+                "success": True,
+                "message": "Password changed successfully.",
+            },
             status=status.HTTP_200_OK,
         )

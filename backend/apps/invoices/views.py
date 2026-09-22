@@ -25,8 +25,17 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Invoice.objects.filter(
-            order__user=self.request.user
+        return (
+            Invoice.objects
+            .filter(order__user=self.request.user)
+            .select_related(
+                "order",
+                "order__user",
+                "order__payment",
+            )
+            .prefetch_related(
+                "order__items__product",
+            )
         )
 
     @action(detail=True, methods=["get"])

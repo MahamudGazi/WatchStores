@@ -5,10 +5,11 @@ import time
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Sum, Q, Count
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
+from django.db.models import Prefetch
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -22,7 +23,7 @@ from apps.payments.services import create_ssl_session
 from apps.products.models import Product
 from apps.shipping.models import ShippingAddress, ShippingCharge
 from apps.shipping.serializers import (ShippingAddressSerializer,)
-from .models import (Order, OrderItem, OrderStatusHistory, ReturnRequestImage, ReturnRequest, Refund, PAYMENT,)
+from .models import ( Coupon, Order, OrderStatusHistory, OrderItem, ReturnRequestImage, ReturnRequest, Refund, PAYMENT,)
 from .serializers import ( OrderSerializer, OrderItemSerializer, OrderStatusHistorySerializer, ReturnRequestSerializer, ReturnRequestImageSerializer, RefundSerializer, )
 # from django.db import transaction
 from .tasks import send_order_confirmation_email
@@ -67,19 +68,57 @@ class OrderViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        if user.is_superuser or user.groups.filter(name__in=["Admin", "Staff"]).exists():
+        if user.is_superuser or user.groups.filter(
+            name__in=["Admin", "Staff"]
+        ).exists():
             return (
                 Order.objects
-                .select_related("user", "shipping_address")
-                .prefetch_related("items", "status_history")
+                .select_related(
+                    "user",
+                    "shipping_address",
+                    "coupon",
+                    "payment",
+                )
+                .prefetch_related(
+                    Prefetch(
+                        "items",
+                        queryset=OrderItem.objects.select_related(
+                            "product"
+                        ),
+                    ),
+                    Prefetch(
+                        "status_history",
+                        queryset=OrderStatusHistory.objects.select_related(
+                            "changed_by"
+                        ),
+                    ),
+                )
                 .order_by("-created_at")
             )
 
         return (
             Order.objects
             .filter(user=user)
-            .select_related("shipping_address")
-            .prefetch_related("items", "status_history")
+            .select_related(
+                "user",
+                "shipping_address",
+                "coupon",
+                "payment",
+            )
+            .prefetch_related(
+                Prefetch(
+                    "items",
+                    queryset=OrderItem.objects.select_related(
+                        "product"
+                    ),
+                ),
+                Prefetch(
+                    "status_history",
+                    queryset=OrderStatusHistory.objects.select_related(
+                        "changed_by"
+                    ),
+                ),
+            )
             .order_by("-created_at")
         )
 
@@ -208,6 +247,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         # CREATE ORDER + STOCK LOCK
         # -------------------------------------------------
 
+        payment_url = None
         try:
 
             with transaction.atomic():
@@ -217,6 +257,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     Cart.objects
                     .filter(user=request.user)
                     .select_related("product")
+                    .select_for_update()
                 )
 
                 if not cart_items:
@@ -305,23 +346,66 @@ class OrderViewSet(viewsets.ModelViewSet):
                 order.save(
                     update_fields=["stock_deducted"]
                 )
-                
+
                 # -----------------------------------------
-                # DELIVERY
+                # COUPON
+                # -----------------------------------------
+
+                coupon = None
+                coupon_code = request.data.get("coupon_code")
+                discount_amount = Decimal("0.00")
+
+                if coupon_code:
+                    coupon_code = str(coupon_code).strip().upper()
+
+                    try:
+                        coupon = Coupon.objects.get(
+                            code__iexact=coupon_code
+                        )
+                    except Coupon.DoesNotExist:
+                        raise ValueError("Invalid coupon code.")
+
+                    now = timezone.now()
+
+                    if not coupon.active:
+                        raise ValueError("This coupon is inactive.")
+
+                    if now < coupon.valid_from:
+                        raise ValueError("This coupon is not active yet.")
+
+                    if now > coupon.valid_to:
+                        raise ValueError("This coupon has expired.")
+
+                    discount_amount = (
+                        total * Decimal(coupon.discount) / Decimal("100")
+                    )
+
+                    discount_amount = min(
+                        discount_amount,
+                        total,
+                    )
+
+                # -----------------------------------------
+                # DELIVERY + GRAND TOTAL
                 # -----------------------------------------
 
                 grand_total = (
-                    total +
-                    delivery_charge
+                    total
+                    - discount_amount
+                    + delivery_charge
                 )
 
+                order.coupon = coupon
                 order.total_price = total
+                order.discount_amount = discount_amount
                 order.delivery_charge = delivery_charge
                 order.grand_total = grand_total
 
                 order.save(
                     update_fields=[
+                        "coupon",
                         "total_price",
+                        "discount_amount",
                         "delivery_charge",
                         "grand_total",
                     ]
@@ -344,6 +428,66 @@ class OrderViewSet(viewsets.ModelViewSet):
                 invoice = Invoice.objects.create(
                     order=order
                 )
+
+                # -----------------------------------------
+                # SSL COMMERZ
+                # -----------------------------------------
+
+                if payment_method == "SSL":
+
+                    try:
+
+                        ssl_start = time.perf_counter()
+
+                        ssl = create_ssl_session(order)
+
+                        logger.info(
+                            "SSL SESSION: %.3f sec",
+                            time.perf_counter() - ssl_start,
+                        )
+
+                        if not ssl:
+                            raise ValueError(
+                                "Payment gateway error."
+                            )
+
+                        if ssl.get("status") != "SUCCESS":
+
+                            logger.error(
+                                "SSL payment failed for order %s: %s",
+                                order.order_number,
+                                ssl,
+                            )
+
+                            raise ValueError(
+                                ssl.get(
+                                    "failedreason",
+                                    "Payment gateway error.",
+                                )
+                            )
+
+                        payment_url = ssl.get(
+                            "GatewayPageURL"
+                        )
+
+                        if not payment_url:
+                            raise ValueError(
+                                "Payment gateway did not return a payment URL."
+                            )
+
+                    except ValueError:
+                        raise
+
+                    except Exception as exc:
+
+                        logger.exception(
+                            "SSLCommerz error: %s",
+                            exc,
+                        )
+
+                        raise ValueError(
+                            "Payment gateway error."
+                        )
 
                 # -----------------------------------------
                 # CLEAR CART
@@ -373,65 +517,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=500,
             )
 
-        # -------------------------------------------------
-        # SSL COMMERZ
-        # -------------------------------------------------
-
-        payment_url = None
-
-        if payment_method == "SSL":
-
-            try:
-
-                ssl_start = time.perf_counter()
-
-                ssl = create_ssl_session(
-                    order
-                )
-
-                logger.info(
-                    "SSL SESSION: %.3f sec",
-                    time.perf_counter() - ssl_start,
-                )
-
-                if not ssl:
-
-                    return error_response(
-                        message="Payment gateway error.",
-                        status=400,
-                    )
-
-                if ssl.get("status") != "SUCCESS":
-
-                    logger.error(
-                        "SSL payment failed for order %s: %s",
-                        order.order_number,
-                        ssl,
-                    )
-
-                    return error_response(
-                        message=ssl.get(
-                            "failedreason",
-                            "Payment gateway error.",
-                        ),
-                        status=400,
-                    )
-
-                payment_url = ssl.get(
-                    "GatewayPageURL"
-                )
-
-            except Exception as exc:
-
-                logger.exception(
-                    "SSLCommerz error: %s",
-                    exc,
-                )
-
-                return error_response(
-                    message="Payment gateway error.",
-                    status=400,
-                )
 
         # -------------------------------------------------
         # BACKGROUND EMAIL + PDF (never block checkout if Redis down)
@@ -458,7 +543,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     )
 
         transaction.on_commit(_send_confirmation)
-        
+
         # -------------------------------------------------
         # TOTAL TIME
         # -------------------------------------------------
@@ -498,7 +583,8 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         order = get_object_or_404(
             Order.objects.select_related(
-                "shipping_address"
+                "shipping_address",
+                "payment",
             ),
             order_number=order_number,
             user=request.user,
@@ -730,7 +816,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             },
             message="Order status updated successfully.",
         )
-        
+
 
     @action(
         detail=True,
@@ -805,6 +891,18 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
 
         # -------------------------------------------------
+        # VALIDATE RETURN IMAGES
+        # -------------------------------------------------
+
+        images = request.FILES.getlist("images")
+
+        if len(images) > 5:
+            return error_response(
+                message="You can upload a maximum of 5 images.",
+                status=400,
+            )
+
+        # -------------------------------------------------
         # VALIDATE RETURN REQUEST
         # -------------------------------------------------
 
@@ -817,25 +915,25 @@ class OrderViewSet(viewsets.ModelViewSet):
         )
 
         # -------------------------------------------------
-        # CREATE RETURN REQUEST
+        # CREATE RETURN REQUEST + IMAGES ATOMICALLY
         # -------------------------------------------------
 
-        return_request = serializer.save(
-            order=order
-        )
+        with transaction.atomic():
 
-        # -------------------------------------------------
-        # SAVE RETURN IMAGES
-        # -------------------------------------------------
-
-        images = request.FILES.getlist("images")
-
-        for image in images:
-
-            ReturnRequestImage.objects.create(
-                return_request=return_request,
-                image=image,
+            return_request = serializer.save(
+                order=order
             )
+
+            for image in images:
+
+                ReturnRequestImage.objects.create(
+                    return_request=return_request,
+                    image=image,
+                )
+
+        return_images = list(
+            return_request.images.all()
+        )
 
         # -------------------------------------------------
         # RESPONSE
@@ -857,7 +955,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     ),
                 ),
                 "images": ReturnRequestImageSerializer(
-                    return_request.images.all(),
+                    return_images,
                     many=True,
                     context={
                         "request": request,
@@ -1124,9 +1222,21 @@ class OrderViewSet(viewsets.ModelViewSet):
         orders = (
             Order.objects
             .filter(user=request.user)
+            .select_related(
+                "user",
+                "shipping_address",
+                "coupon",
+                "payment",
+            )
             .prefetch_related(
-                "items",
-                "status_history",
+                Prefetch(
+                    "items",
+                    queryset=OrderItem.objects.select_related("product"),
+                ),
+                Prefetch(
+                    "status_history",
+                    queryset=OrderStatusHistory.objects.select_related("changed_by"),
+                ),
             )
             .order_by("-created_at")
         )
@@ -1161,10 +1271,18 @@ class OrderViewSet(viewsets.ModelViewSet):
             .select_related(
                 "user",
                 "shipping_address",
+                "coupon",
+                "payment",
             )
             .prefetch_related(
-                "items",
-                "status_history",
+                Prefetch(
+                    "items",
+                    queryset=OrderItem.objects.select_related("product"),
+                ),
+                Prefetch(
+                    "status_history",
+                    queryset=OrderStatusHistory.objects.select_related("changed_by"),
+                ),
             )
             .order_by("-created_at")
         )
@@ -1193,31 +1311,22 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         User = get_user_model()
 
-        customers = User.objects.filter(
-            is_staff=False
-        ).order_by("-date_joined")
+        customers = (
+            User.objects
+            .filter(is_staff=False)
+            .annotate(
+                total_orders=Count("orders", distinct=True),
+                total_spent=Sum(
+                    "orders__grand_total",
+                    filter=Q(orders__status="Delivered"),
+                ),
+            )
+            .order_by("-date_joined")
+        )
 
         data = []
 
         for customer in customers:
-
-            orders = Order.objects.filter(
-                user=customer
-            )
-
-            total_orders = orders.count()
-
-            total_spent = (
-                orders
-                .filter(
-                    status="Delivered"
-                )
-                .aggregate(
-                    total=Sum("grand_total")
-                )
-                .get("total")
-                or Decimal("0.00")
-            )
 
             data.append({
                 "id": customer.id,
@@ -1226,8 +1335,11 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "first_name": customer.first_name,
                 "last_name": customer.last_name,
                 "date_joined": customer.date_joined,
-                "total_orders": total_orders,
-                "total_spent": total_spent,
+                "total_orders": customer.total_orders,
+                "total_spent": (
+                    customer.total_spent
+                    or Decimal("0.00")
+                ),
             })
 
         return success_response(
@@ -1243,7 +1355,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         total = Decimal("0.00")
 
         for item in order.items.all():
-
             total += (
                 item.price
                 * item.quantity
@@ -1268,21 +1379,43 @@ class OrderViewSet(viewsets.ModelViewSet):
             delivery_charge = Decimal("0.00")
 
         # -----------------------------------------
+        # COUPON DISCOUNT
+        # -----------------------------------------
+
+        discount_amount = Decimal("0.00")
+
+        if order.coupon:
+            coupon = order.coupon
+
+            discount_amount = (
+                total
+                * Decimal(coupon.discount)
+                / Decimal("100")
+            )
+
+            discount_amount = min(
+                discount_amount,
+                total,
+            )
+
+        # -----------------------------------------
         # TOTAL
         # -----------------------------------------
 
         order.total_price = total
-
+        order.discount_amount = discount_amount
         order.delivery_charge = delivery_charge
 
         order.grand_total = (
             total
+            - discount_amount
             + delivery_charge
         )
 
         order.save(
             update_fields=[
                 "total_price",
+                "discount_amount",
                 "delivery_charge",
                 "grand_total",
                 "updated_at",
@@ -1327,6 +1460,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         # -----------------------------------------
 
         try:
+            order = self.get_object()
 
             with transaction.atomic():
 
@@ -1352,7 +1486,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     )
 
                 # ---------------------------------
-                # LOCK PRODUCT
+                # LOCK ACTIVE PRODUCT
                 # ---------------------------------
 
                 try:
@@ -1360,11 +1494,13 @@ class OrderViewSet(viewsets.ModelViewSet):
                     product = (
                         Product.objects
                         .select_for_update()
-                        .get(pk=product_id)
+                        .get(
+                            pk = product_id,
+                            is_active=True,
+                            )
                     )
 
                 except Product.DoesNotExist:
-
                     return error_response(
                         message="Product not found.",
                         status=404,
@@ -1509,7 +1645,6 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                 item = (
                     order.items
-                    .select_related("product")
                     .select_for_update()
                     .get(
                         id=item_id
@@ -1554,14 +1689,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         detail=True,
         methods=["patch"],
         url_path="update-item",
-    )
+       )
     def update_item(self, request, pk=None):
 
         order = self.get_object()
 
-        # -----------------------------------------
-        # ORDER STATUS CHECK
-        # -----------------------------------------
+       # -----------------------------------------
+       # ORDER STATUS CHECK
+       # -----------------------------------------
 
         if order.status != "Pending":
             return error_response(
@@ -1575,9 +1710,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         item_id = request.data.get("item_id")
         quantity = request.data.get("quantity")
 
-        # -----------------------------------------
-        # VALIDATION
-        # -----------------------------------------
+           # -----------------------------------------
+           # VALIDATION
+           # -----------------------------------------
 
         if not item_id:
             return error_response(
@@ -1605,31 +1740,30 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=400,
             )
 
-        # -----------------------------------------
-        # TRANSACTION
-        # -----------------------------------------
+           # -----------------------------------------
+           # TRANSACTION
+           # -----------------------------------------
 
         try:
 
             with transaction.atomic():
 
-                # Lock order
+                   # Lock order
                 order = (
                     Order.objects
                     .select_for_update()
                     .get(pk=pk)
                 )
 
-                # Get order item
+                   # Get order item
                 try:
 
                     item = (
                         OrderItem.objects
                         .select_for_update()
-                        .select_related("product")
                         .get(
-                            id=item_id,
-                            order=order,
+                           id=item_id,
+                           order=order,
                         )
                     )
 
@@ -1640,7 +1774,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                         status=404,
                     )
 
-                # Lock product
+                   # Lock product
                 product = (
                     Product.objects
                     .select_for_update()
@@ -1651,9 +1785,9 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                 old_quantity = item.quantity
 
-                # ---------------------------------
-                # SAME QUANTITY
-                # ---------------------------------
+                   # ---------------------------------
+                   # SAME QUANTITY
+                   # ---------------------------------
 
                 if old_quantity == quantity:
 
@@ -1664,9 +1798,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                         )
                     )
 
-                # ---------------------------------
-                # INCREASE QUANTITY
-                # ---------------------------------
+                   # ---------------------------------
+                   # INCREASE QUANTITY
+                   # ---------------------------------
 
                 if quantity > old_quantity:
 
@@ -1687,9 +1821,9 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                     product.stock -= additional_quantity
 
-                # ---------------------------------
-                # DECREASE QUANTITY
-                # ---------------------------------
+                   # ---------------------------------
+                   # DECREASE QUANTITY
+                   # ---------------------------------
 
                 else:
 
@@ -1699,14 +1833,14 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                     product.stock += returned_quantity
 
-                # ---------------------------------
-                # SAVE
-                # ---------------------------------
+                   # ---------------------------------
+                   # SAVE
+                   # ---------------------------------
 
                 item.quantity = quantity
 
                 item.save(
-                    update_fields=[
+                   update_fields=[
                         "quantity"
                     ]
                 )
@@ -1717,9 +1851,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                     ]
                 )
 
-                # ---------------------------------
-                # RECALCULATE TOTAL
-                # ---------------------------------
+                   # ---------------------------------
+                   # RECALCULATE TOTAL
+                   # ---------------------------------
 
                 self.recalculate_order_total(
                     order
@@ -1737,7 +1871,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             return error_response(
                 message="Product not found.",
                 status=404,
-            )
+             )
 
         except Exception as exc:
 

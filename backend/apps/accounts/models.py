@@ -10,7 +10,7 @@ class User(AbstractUser):
         null=True,
     )
     is_email_verified = models.BooleanField(default=False)
-    email_otp = models.CharField(max_length=6, blank=True, default="")
+    email_otp = models.CharField(max_length=128, blank=True, default="")
     email_otp_created_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):

@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 
-export default function CartSummary({ cart }) {
+export default function CartSummary({ cart, coupon }) {
   if (!cart || !cart.results) {
     return (
       <div className="rounded-xl border p-6 shadow">
@@ -14,6 +14,16 @@ export default function CartSummary({ cart }) {
     0
   );
 
+  // Coupon discount
+  const discountAmount = coupon?.discount
+    ? Math.min(
+        subtotal * (Number(coupon.discount) / 100),
+        subtotal
+      )
+    : 0;
+
+  const total = subtotal - discountAmount;
+
   return (
     <div className="rounded-xl border p-6 shadow">
       <h2 className="mb-6 text-2xl font-bold">
@@ -22,8 +32,19 @@ export default function CartSummary({ cart }) {
 
       <div className="mb-3 flex justify-between">
         <span>Subtotal</span>
-        <span>৳ {subtotal}</span>
+        <span>৳ {subtotal.toFixed(2)}</span>
       </div>
+
+      {coupon && discountAmount > 0 && (
+        <div className="mb-3 flex justify-between text-green-600">
+          <span>
+            Discount ({coupon.discount}%)
+          </span>
+          <span>
+            -৳ {discountAmount.toFixed(2)}
+          </span>
+        </div>
+      )}
 
       <div className="mb-3 flex justify-between">
         <span>Shipping</span>
@@ -34,7 +55,7 @@ export default function CartSummary({ cart }) {
 
       <div className="flex justify-between text-xl font-bold">
         <span>Total</span>
-        <span>৳ {subtotal}</span>
+        <span>৳ {total.toFixed(2)}</span>
       </div>
 
       <Link

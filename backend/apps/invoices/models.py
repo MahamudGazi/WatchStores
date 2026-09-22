@@ -6,7 +6,7 @@ from io import BytesIO
 from django.db import models
 from django.core.files import File
 from django.utils import timezone
-
+from django.conf import settings
 from apps.orders.models import Order
 
 
@@ -72,11 +72,10 @@ class Invoice(models.Model):
         if not self.qr_code:
 
             qr = qrcode.make(
-                f"http://127.0.0.1:8000/"
+                f"{settings.BASE_URL.rstrip('/')}/"
                 f"api/orders/track/"
                 f"{self.order.order_number}/"
             )
-
             buffer = BytesIO()
 
             qr.save(

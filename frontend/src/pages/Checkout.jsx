@@ -162,8 +162,8 @@ export default function Checkout() {
             payment_method: formData.payment_method,
         };
 
-        if (coupon?.id) {
-            orderPayload.coupon_id = coupon.id;
+        if (coupon?.code) {
+            orderPayload.coupon_code = coupon.code;
         }
 
         const response = await createOrder(orderPayload);
@@ -678,7 +678,7 @@ export default function Checkout() {
                             )}
                         </div>
 
-                        <CartSummary cart={cart} />
+                        <CartSummary cart={cart} coupon={coupon} />
 
                     </div>
 

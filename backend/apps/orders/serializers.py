@@ -94,95 +94,6 @@ class ShippingAddressSerializer(
         read_only_fields = ["id"]
 
 
-# class OrderSerializer(serializers.ModelSerializer):
-
-#     customer = serializers.SerializerMethodField()
-
-#     items = OrderItemSerializer(
-#         many=True,
-#         read_only=True,
-#     )
-
-#     status_history = OrderStatusHistorySerializer(
-#         many=True,
-#         read_only=True,
-#     )
-
-#     shipping_address = ShippingAddressSerializer(
-#         read_only=True,
-#     )
-
-#     shipping_address_id = serializers.PrimaryKeyRelatedField(
-#         source="shipping_address",
-#         queryset=ShippingAddress.objects.all(),
-#         write_only=True,
-#         required=True,
-#     )
-
-#     class Meta:
-#         model = Order
-
-#         fields = [
-#             "id",
-#             "customer",
-#             "user",
-#             "shipping_address",
-#             "shipping_address_id",
-#             "order_number",
-#             "payment_method",
-#             "ip_address",
-#             "coupon",
-#             "total_price",
-#             "delivery_charge",
-#             "grand_total",
-#             "status",
-#             "created_at",
-#             "items",
-#             "status_history",
-#         ]
-
-#         read_only_fields = [
-#             "id",
-#             "user",
-#             "order_number",
-#             "ip_address",
-#             "payment_method",
-#             "coupon",
-#             "total_price",
-#             "delivery_charge",
-#             "grand_total",
-#             "status",
-#             "created_at",
-#             "items",
-#             "status_history",
-#             "customer",
-#         ]
-
-#     def get_customer(self, obj):
-
-#         if not obj.user:
-#             return None
-
-#         return {
-#             "id": obj.user.id,
-#             "username": obj.user.username,
-#             "email": obj.user.email,
-#         }
-
-#     def validate_shipping_address_id(self, value):
-
-#         request = self.context.get("request")
-
-#         if request is None:
-#             return value
-
-#         if value.user != request.user:
-#             raise serializers.ValidationError(
-#                 "Invalid shipping address."
-#             )
-
-#         return value
-
 class OrderSerializer(serializers.ModelSerializer):
 
     customer = serializers.SerializerMethodField()
@@ -202,11 +113,6 @@ class OrderSerializer(serializers.ModelSerializer):
         source="payment.amount",
         max_digits=10,
         decimal_places=2,
-        read_only=True,
-    )
-
-    items = OrderItemSerializer(
-        many=True,
         read_only=True,
     )
 

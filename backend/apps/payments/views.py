@@ -186,6 +186,15 @@ def _process_success_payment(request):
                     )
                 )
 
+                if payment.method != "SSL":
+                    return Response(
+                        {
+                            "success": False,
+                            "message": "Invalid payment method.",
+                        },
+                        status=400,
+                    )
+
             except Payment.DoesNotExist:
 
                 return Response(
@@ -781,6 +790,15 @@ def payment_cancel(request):
                     order=order
                 )
             )
+
+            if payment.method != "SSL":
+                return Response(
+                    {
+                        "success": False,
+                        "message": "Invalid payment method.",
+                    },
+                    status=400,
+                )
 
             # ---------------------------------------------
             # DON'T OVERWRITE SUCCESS

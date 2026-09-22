@@ -14,13 +14,18 @@ from .models import (
     ProductImage,
     RecentlyViewed,
 )
-from django.db.models import Sum
+from django.db.models import (
+    Sum, Avg, Count,
+    Exists, OuterRef,
+    Value, BooleanField,
+    )
 from apps.core.permissions import IsAdminOrReadOnly, IsAdmin
+from apps.wishlist.models import Wishlist
 
 from apps.core.responses import (
     success_response,
     error_response,
-    
+
 )
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
@@ -29,16 +34,43 @@ from rest_framework import status
 
 class ProductViewSet(viewsets.ModelViewSet):
 
-    queryset = (
-        Product.objects
-        .select_related(
-            "brand",
-            "category",
+    def get_queryset(self):
+        user = self.request.user
+
+        queryset = (
+            Product.objects
+            .select_related("brand", "category")
+            .prefetch_related("images")
+            .annotate(
+                average_rating_value=Avg("reviews__rating"),
+                review_count_value=Count("reviews", distinct=True),
+            )
         )
-        .prefetch_related(
-            "images",
+
+        if user.is_authenticated:
+            queryset = queryset.annotate(
+                is_in_wishlist_value=Exists(
+                    Wishlist.objects.filter(
+                        user=user,
+                        product=OuterRef("pk"),
+                    )
+                )
+            )
+        else:
+            queryset = queryset.annotate(
+                is_in_wishlist_value=Value(
+                    False,
+                    output_field=BooleanField(),
+                )
+            )
+
+        if user.is_authenticated and user.is_staff:
+            return queryset
+
+        return queryset.filter(
+            is_active=True,
+            stock__gt=0,
         )
-    )
 
     serializer_class = ProductSerializer
     permission_classes = [IsAdminOrReadOnly]
@@ -75,28 +107,7 @@ class ProductViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
-    def get_queryset(self):
-        queryset = (
-            Product.objects
-            .select_related(
-                "brand",
-                "category",
-            )
-            .prefetch_related(
-                "images",
-            )
-        )
 
-        if (
-            self.request.user.is_authenticated
-            and self.request.user.is_staff
-        ):
-            return queryset
-
-        return queryset.filter(
-            is_active=True,
-            stock__gt=0,
-        )
     filter_backends = [
         DjangoFilterBackend,
         SearchFilter,
@@ -126,7 +137,7 @@ class ProductViewSet(viewsets.ModelViewSet):
         context = super().get_serializer_context()
         context["request"] = self.request
         return context
-    
+
     def retrieve(self, request, *args, **kwargs):
         product = self.get_object()
 
@@ -142,19 +153,23 @@ class ProductViewSet(viewsets.ModelViewSet):
             )
 
         return response
-    
-    
-    
+
+
+
     @action(detail=True, methods=["get"])
     def similar(self, request, pk=None):
         product = self.get_object()
 
-        similar_products = Product.objects.filter(
-            brand=product.brand,
-            is_active=True,
-        ).exclude(
-            id=product.id
-        )[:8]
+        similar_products = (
+            self.get_queryset()
+            .filter(
+                brand=product.brand,
+                is_active=True,
+            )
+            .exclude(
+                id=product.id,
+            )[:8]
+        )
 
         serializer = self.get_serializer(
             similar_products,
@@ -163,27 +178,30 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         return success_response(
             data=serializer.data,
-            message="Success"
+            message="Success",
         )
-            
+
     @action(detail=True, methods=["get"], url_path="frequently-bought")
     def frequently_bought(self, request, pk=None):
         product = self.get_object()
 
-        order_ids = OrderItem.objects.filter(
-            product=product
-        ).values_list(
-            "order_id",
-            flat=True
+        order_ids = (
+            OrderItem.objects
+            .filter(product=product)
+            .values_list("order_id", flat=True)
         )
 
-        
-        products = Product.objects.filter(
-            orderitem__order_id__in=order_ids,
-            is_active=True,
-        ).exclude(
-            id=product.id
-        ).distinct()[:8]
+        products = (
+            self.get_queryset()
+            .filter(
+                orderitem__order_id__in=order_ids,
+                is_active=True,
+            )
+            .exclude(
+                id=product.id,
+            )
+            .distinct()[:8]
+        )
 
         serializer = self.get_serializer(
             products,
@@ -192,25 +210,37 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         return success_response(
             data=serializer.data,
-            message="Success"
+            message="Success",
         )
-     
+
     @action(detail=False, methods=["get"])
     def recently_viewed(self, request):
-        views = RecentlyViewed.objects.filter(user=request.user)
+        if not request.user.is_authenticated:
+            return success_response(
+                data=[],
+                message="Success",
+            )
 
-        products = [v.product for v in views]
+        products = (
+            self.get_queryset()
+            .filter(recent_views__user=request.user)
+            .distinct()
+        )
+
         serializer = self.get_serializer(products, many=True)
+
         return success_response(
             data=serializer.data,
-            message="Success"
+            message="Success",
         )
-     
+
     @action(detail=False, methods=["get"])
     def trending(self, request):
-        products = Product.objects.filter(
-            is_active=True
-        ).order_by("-views_count")[:10]
+        products = (
+            self.get_queryset()
+            .filter(is_active=True)
+            .order_by("-views_count")[:10]
+        )
 
         serializer = self.get_serializer(
             products,
@@ -219,23 +249,28 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         return success_response(
             data=serializer.data,
-            message="Success"
+            message="Success",
         )
 
     @action(detail=False, methods=["get"])
     def best_sellers(self, request):
         products = (
-            Product.objects.filter(is_active=True)
+            self.get_queryset()
+            .filter(is_active=True)
             .annotate(
                 total_sold=Sum("orderitem__quantity")
             )
             .order_by("-total_sold")[:10]
         )
 
-        serializer = self.get_serializer(products, many=True)
+        serializer = self.get_serializer(
+            products,
+            many=True,
+        )
+
         return success_response(
             data=serializer.data,
-            message="Success"
+            message="Success",
         )
 
     @action(detail=False, methods=["get"])
@@ -245,39 +280,31 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         purchased_categories = OrderItem.objects.filter(
             order__user=request.user,
-            order__status="Delivered"
+            order__status="Delivered",
         ).values_list(
             "product__category_id",
-            flat=True
+            flat=True,
         )
 
         purchased_products = OrderItem.objects.filter(
             order__user=request.user,
-            order__status="Delivered"
+            order__status="Delivered",
         ).values_list(
             "product_id",
-            flat=True
+            flat=True,
         )
 
-        products = Product.objects.filter(
-            category_id__in=purchased_categories,
-            is_active=True
-        ).exclude(
-            id__in=purchased_products
-        ).distinct()[:10]
-
-        serializer = self.get_serializer(products, many=True)
-        return success_response(
-            data=serializer.data,
-            message="Success"
+        products = (
+            self.get_queryset()
+            .filter(
+                category_id__in=purchased_categories,
+                is_active=True,
+            )
+            .exclude(
+                id__in=purchased_products,
+            )
+            .distinct()[:10]
         )
-
-    @action(detail=False, methods=["get"])
-    def flash_sale(self, request):
-        products = Product.objects.filter(
-            is_flash_sale=True,
-            is_active=True,
-        )[:20]
 
         serializer = self.get_serializer(
             products,
@@ -286,23 +313,49 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         return success_response(
             data=serializer.data,
-            message="Success"
+            message="Success",
         )
 
     @action(detail=False, methods=["get"])
-    def low_stock(self, request):
-        products = Product.objects.filter(
-            stock__gt=0,
-            stock__lte=5,
-            is_active=True,
+    def flash_sale(self, request):
+        products = (
+            self.get_queryset()
+            .filter(
+                is_flash_sale=True,
+                is_active=True,
+            )[:20]
         )
 
-        serializer = self.get_serializer(products, many=True)
+        serializer = self.get_serializer(
+            products,
+            many=True,
+        )
+
         return success_response(
             data=serializer.data,
-            message="Success"
+            message="Success",
         )
-    
+
+    @action(detail=False, methods=["get"])
+    def out_of_stock(self, request):
+        products = (
+            self.get_queryset()
+            .filter(
+                stock=0,
+                is_active=True,
+            )
+        )
+
+        serializer = self.get_serializer(
+            products,
+            many=True,
+        )
+
+        return success_response(
+            data=serializer.data,
+            message="Out of stock products fetched successfully.",
+        )
+
     @action(detail=False, methods=["get"])
     def out_of_stock(self, request):
         products = Product.objects.filter(
@@ -343,7 +396,7 @@ class ProductViewSet(viewsets.ModelViewSet):
             )
 
         # =========================
-        # POST — Upload Image
+        # POST â€” Upload Image
         # =========================
         image = request.FILES.get("image")
         alt_text = request.data.get("alt_text", "")
@@ -482,9 +535,11 @@ class ProductViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"])
     def inventory(self, request):
 
-        products = Product.objects.all().order_by(
-            "stock",
-            "name"
+        products = (
+            Product.objects
+            .select_related("brand", "category")
+            .prefetch_related("images")
+            .order_by("stock", "name")
         )
 
         data = []
@@ -500,10 +555,6 @@ class ProductViewSet(viewsets.ModelViewSet):
             else:
                 stock_status = "In Stock"
 
-            # =========================
-            # PRODUCT IMAGE
-            # =========================
-
             image_url = None
 
             # First priority: Thumbnail
@@ -514,7 +565,7 @@ class ProductViewSet(viewsets.ModelViewSet):
 
             # Second priority: Gallery image
             else:
-                first_image = product.images.first()
+                first_image = next(iter(product.images.all()), None)
 
                 if first_image and first_image.image:
                     image_url = request.build_absolute_uri(
@@ -529,23 +580,12 @@ class ProductViewSet(viewsets.ModelViewSet):
                 "stock": product.stock,
                 "is_active": product.is_active,
                 "status": stock_status,
-
-                "image": (
-                    product.thumbnail.url
-                    if product.thumbnail
-                    else (
-                        product.images.first().image.url
-                        if product.images.exists()
-                        else None
-                    )
-                ),
-
+                "image": image_url,
                 "brand": (
                     product.brand.name
                     if product.brand
                     else None
                 ),
-
                 "category": (
                     product.category.name
                     if product.category
@@ -555,7 +595,7 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         return success_response(
             data=data,
-            message="Inventory fetched successfully."
+            message="Inventory fetched successfully.",
         )
 
     @action(

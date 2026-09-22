@@ -1,7 +1,5 @@
-from django.db.models import Avg
 from rest_framework import serializers
 
-from apps.wishlist.models import Wishlist
 from .models import Product, ProductImage
 
 
@@ -91,25 +89,18 @@ class ProductSerializer(serializers.ModelSerializer):
         return data
 
     def get_is_in_wishlist(self, obj):
-        request = self.context.get("request")
-
-        if not request or not request.user.is_authenticated:
-            return False
-
-        return Wishlist.objects.filter(
-            user=request.user,
-            product=obj,
-        ).exists()
+        return getattr(
+            obj,
+            "is_in_wishlist_value",
+            False,
+        )
 
     def get_average_rating(self, obj):
-        average = obj.reviews.aggregate(
-            Avg("rating")
-        )["rating__avg"]
-
+        average = obj.average_rating_value
         return round(average, 1) if average else 0
 
     def get_review_count(self, obj):
-        return obj.reviews.count()
+        return obj.review_count_value
 
     def get_stock_status(self, obj):
         if obj.stock == 0:

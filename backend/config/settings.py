@@ -86,7 +86,7 @@ environ.Env.read_env(
 )
 
 SECRET_KEY = env("SECRET_KEY")
-DEBUG = config("DEBUG", cast=bool, default=True)
+DEBUG = config("DEBUG", cast=bool, default=False)
 
 ALLOWED_HOSTS = [
     host.strip()
@@ -422,7 +422,12 @@ REST_FRAMEWORK = {
         "anon": "100/hour",
         "user": "1000/hour",
         "login": "5/min",
-    },
+
+        "password_reset_otp": "5/15min",
+        "password_reset_resend": "3/15min",
+        "email_verification_otp": "5/15min",
+        "email_verification_resend": "3/15min",
+     },
 }
 
 SIMPLE_JWT = {

@@ -50,6 +50,7 @@ def send_order_confirmation_email(
             "order": order,
             "invoice": invoice,
             "items": order.items.all(),
+            "site_url": settings.FRONTEND_URL.rstrip("/"),
         },
     )
 
