@@ -1655,13 +1655,13 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                 existing_item = (
                     OrderItem.objects
+                    .select_for_update()
                     .filter(
                         order=order,
                         product=product,
                     )
                     .first()
                 )
-
                 # ---------------------------------
                 # UPDATE / CREATE
                 # ---------------------------------
