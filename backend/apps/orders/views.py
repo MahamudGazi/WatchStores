@@ -699,24 +699,39 @@ class OrderViewSet(viewsets.ModelViewSet):
     )
     def cancel(self, request, pk=None):
 
-        order = self.get_object()
+        with transaction.atomic():
 
-        if order.status not in [
-            "Pending",
-            "Confirmed",
-        ]:
-            return error_response(
-                message="Order cannot be cancelled at this stage.",
-                status=400,
+            order = (
+                Order.objects
+                .select_for_update()
+                .get(pk=pk)
             )
 
-        with transaction.atomic():
+            if order.user != request.user:
+                return error_response(
+                    message="You do not have permission to cancel this order.",
+                    status=403,
+                )
+
+            if order.status not in [
+                "Pending",
+                "Confirmed",
+            ]:
+                return error_response(
+                    message="Order cannot be cancelled at this stage.",
+                    status=400,
+                )
 
             if order.stock_deducted:
 
-                for item in order.items.select_related(
-                    "product"
-                ):
+                items = (
+                    order.items
+                    .select_related("product")
+                    .select_for_update()
+                    .order_by("product_id")
+                )
+
+                for item in items:
 
                     item.product.stock += item.quantity
 
