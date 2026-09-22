@@ -1766,30 +1766,18 @@ class OrderViewSet(viewsets.ModelViewSet):
         detail=True,
         methods=["patch"],
         url_path="update-item",
-       )
+    )
     def update_item(self, request, pk=None):
 
-        order = self.get_object()
-
-       # -----------------------------------------
-       # ORDER STATUS CHECK
-       # -----------------------------------------
-
-        if order.status != "Pending":
-            return error_response(
-                message=(
-                    "Products can only be updated "
-                    "in pending orders."
-                ),
-                status=400,
-            )
+        # Keep object-level permission checking.
+        self.get_object()
 
         item_id = request.data.get("item_id")
         quantity = request.data.get("quantity")
 
-           # -----------------------------------------
-           # VALIDATION
-           # -----------------------------------------
+        # -----------------------------------------
+        # VALIDATION
+        # -----------------------------------------
 
         if not item_id:
             return error_response(
@@ -1817,30 +1805,46 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=400,
             )
 
-           # -----------------------------------------
-           # TRANSACTION
-           # -----------------------------------------
+        # -----------------------------------------
+        # TRANSACTION
+        # -----------------------------------------
 
         try:
 
             with transaction.atomic():
 
-                   # Lock order
+                # Lock order before checking its status.
                 order = (
                     Order.objects
                     .select_for_update()
                     .get(pk=pk)
                 )
 
-                   # Get order item
+                # -----------------------------------------
+                # ORDER STATUS CHECK
+                # -----------------------------------------
+
+                if order.status != "Pending":
+                    return error_response(
+                        message=(
+                            "Products can only be updated "
+                            "in pending orders."
+                        ),
+                        status=400,
+                    )
+
+                # -----------------------------------------
+                # LOCK ORDER ITEM
+                # -----------------------------------------
+
                 try:
 
                     item = (
                         OrderItem.objects
                         .select_for_update()
                         .get(
-                           id=item_id,
-                           order=order,
+                            id=item_id,
+                            order=order,
                         )
                     )
 
@@ -1851,7 +1855,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                         status=404,
                     )
 
-                   # Lock product
+                # -----------------------------------------
+                # LOCK PRODUCT
+                # -----------------------------------------
+
                 product = (
                     Product.objects
                     .select_for_update()
@@ -1862,9 +1869,9 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                 old_quantity = item.quantity
 
-                   # ---------------------------------
-                   # SAME QUANTITY
-                   # ---------------------------------
+                # -----------------------------------------
+                # SAME QUANTITY
+                # -----------------------------------------
 
                 if old_quantity == quantity:
 
@@ -1875,9 +1882,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                         )
                     )
 
-                   # ---------------------------------
-                   # INCREASE QUANTITY
-                   # ---------------------------------
+                # -----------------------------------------
+                # INCREASE QUANTITY
+                # -----------------------------------------
 
                 if quantity > old_quantity:
 
@@ -1898,9 +1905,9 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                     product.stock -= additional_quantity
 
-                   # ---------------------------------
-                   # DECREASE QUANTITY
-                   # ---------------------------------
+                # -----------------------------------------
+                # DECREASE QUANTITY
+                # -----------------------------------------
 
                 else:
 
@@ -1910,14 +1917,14 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                     product.stock += returned_quantity
 
-                   # ---------------------------------
-                   # SAVE
-                   # ---------------------------------
+                # -----------------------------------------
+                # SAVE
+                # -----------------------------------------
 
                 item.quantity = quantity
 
                 item.save(
-                   update_fields=[
+                    update_fields=[
                         "quantity"
                     ]
                 )
@@ -1928,9 +1935,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                     ]
                 )
 
-                   # ---------------------------------
-                   # RECALCULATE TOTAL
-                   # ---------------------------------
+                # -----------------------------------------
+                # RECALCULATE TOTAL
+                # -----------------------------------------
 
                 self.recalculate_order_total(
                     order
@@ -1948,7 +1955,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             return error_response(
                 message="Product not found.",
                 status=404,
-             )
+            )
 
         except Exception as exc:
 
@@ -1966,7 +1973,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         return success_response(
             message="Order item quantity updated successfully."
         )
-
 
 
 class ShippingAddressViewSet(viewsets.ModelViewSet):
