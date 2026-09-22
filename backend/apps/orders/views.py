@@ -1685,16 +1685,8 @@ class OrderViewSet(viewsets.ModelViewSet):
     )
     def remove_item(self, request, pk=None):
 
-        order = self.get_object()
-
-        if order.status != "Pending":
-            return error_response(
-                message=(
-                    "Products can only be removed "
-                    "from pending orders."
-                ),
-                status=400,
-            )
+        # Keep object-level permission checking.
+        self.get_object()
 
         item_id = request.data.get(
             "item_id"
@@ -1709,6 +1701,23 @@ class OrderViewSet(viewsets.ModelViewSet):
         try:
 
             with transaction.atomic():
+
+                # Lock the order so concurrent cart modifications
+                # for the same order are processed one at a time.
+                order = (
+                    Order.objects
+                    .select_for_update()
+                    .get(pk=pk)
+                )
+
+                if order.status != "Pending":
+                    return error_response(
+                        message=(
+                            "Products can only be removed "
+                            "from pending orders."
+                        ),
+                        status=400,
+                    )
 
                 item = (
                     order.items
@@ -1751,6 +1760,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         return success_response(
             message="Product removed from order successfully."
         )
+
 
     @action(
         detail=True,
