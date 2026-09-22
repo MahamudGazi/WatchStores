@@ -1769,9 +1769,12 @@ class OrderViewSet(viewsets.ModelViewSet):
                 order = (
                     Order.objects
                     .select_for_update()
+                    .select_related(
+                        "shipping_address",
+                        "coupon",
+                    )
                     .get(pk=pk)
                 )
-
                 if order.status != "Pending":
                     return error_response(
                         message=(
@@ -1822,7 +1825,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         return success_response(
             message="Product removed from order successfully."
         )
-
 
     @action(
         detail=True,
