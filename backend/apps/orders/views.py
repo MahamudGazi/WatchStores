@@ -1168,18 +1168,27 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "return_request__order",
             )
             .order_by("-id")
-         )
+        )
+
+        # -----------------------------------------
+        # PAGINATION
+        # -----------------------------------------
+
+        paginator = self.pagination_class()
+
+        page = paginator.paginate_queryset(
+            refunds,
+            request,
+            view=self,
+        )
 
         serializer = RefundSerializer(
-            refunds,
+            page,
             many=True,
         )
 
-        return success_response(
-            data=serializer.data,
-            message=(
-                "Refund list fetched successfully."
-            ),
+        return paginator.get_paginated_response(
+            serializer.data
         )
 
         # -------------------------------------------------
