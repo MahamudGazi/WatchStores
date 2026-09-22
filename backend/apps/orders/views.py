@@ -1105,38 +1105,46 @@ class OrderViewSet(viewsets.ModelViewSet):
         pk=None,
     ):
 
-        order = self.get_object()
+        with transaction.atomic():
 
-        if not hasattr(
-            order,
-            "return_request",
-        ):
-
-            return error_response(
-                message=(
-                    "Return request not found."
-                ),
-                status=404,
+            order = (
+                Order.objects
+                .select_for_update()
+                .get(pk=pk)
             )
 
-        return_request = (
-            order.return_request
-        )
+            try:
+                return_request = (
+                    ReturnRequest.objects
+                    .select_for_update()
+                    .get(order=order)
+                )
+            except ReturnRequest.DoesNotExist:
+                return error_response(
+                    message="Return request not found.",
+                    status=404,
+                )
 
-        return_request.status = "Rejected"
+            if return_request.status != "Pending":
+                return error_response(
+                    message=(
+                        "Return request cannot be rejected "
+                        f"because it is already "
+                        f"{return_request.status}."
+                    ),
+                    status=400,
+                )
 
-        return_request.save(
-            update_fields=["status"]
-        )
+            return_request.status = "Rejected"
+
+            return_request.save(
+                update_fields=["status"]
+            )
 
         return success_response(
-            message=(
-                "Return request rejected "
-                "successfully."
-            )
+            message="Return request rejected successfully."
         )
-
-        # -------------------------------------------------
+            # -------------------------------------------------
         # REFUNDS
         # -------------------------------------------------
 
