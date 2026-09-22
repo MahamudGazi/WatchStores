@@ -1382,18 +1382,35 @@ class OrderViewSet(viewsets.ModelViewSet):
             User.objects
             .filter(is_staff=False)
             .annotate(
-                total_orders=Count("orders", distinct=True),
+                total_orders=Count(
+                    "orders",
+                    distinct=True,
+                ),
                 total_spent=Sum(
                     "orders__grand_total",
-                    filter=Q(orders__status="Delivered"),
+                    filter=Q(
+                        orders__status="Delivered"
+                    ),
                 ),
             )
             .order_by("-date_joined")
         )
 
+        # -----------------------------------------
+        # PAGINATION
+        # -----------------------------------------
+
+        paginator = self.pagination_class()
+
+        page = paginator.paginate_queryset(
+            customers,
+            request,
+            view=self,
+        )
+
         data = []
 
-        for customer in customers:
+        for customer in page:
 
             data.append({
                 "id": customer.id,
@@ -1409,10 +1426,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                 ),
             })
 
-        return success_response(
-            data=data,
-            message="Admin customers fetched successfully.",
+        return paginator.get_paginated_response(
+            data
         )
+
 
     def recalculate_order_total(
         self,
