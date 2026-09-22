@@ -885,71 +885,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         pk=None,
     ):
 
-        order = self.get_object()
-
-        if order.status != "Delivered":
-            return error_response(
-                message=(
-                    "Only delivered orders can be returned."
-                ),
-                status=400,
-            )
-
-        # -------------------------------------------------
-        # 48 HOURS RETURN WINDOW
-        # -------------------------------------------------
-
-        delivered_history = (
-            order.status_history
-            .filter(status="Delivered")
-            .order_by("-changed_at")
-            .first()
-        )
-
-        if not delivered_history:
-            return error_response(
-                message=(
-                    "Delivery time could not be determined."
-                ),
-                status=400,
-            )
-
-        delivered_at = delivered_history.changed_at
-        now = timezone.now()
-
-        return_deadline = (
-            delivered_at + timedelta(hours=48)
-        )
-
-        # -------------------------------------------------
-        # RETURN WINDOW EXPIRED
-        # -------------------------------------------------
-
-        if now > return_deadline:
-            return error_response(
-                message=(
-                    "Return period has expired. "
-                    "Returns are only accepted within "
-                    "48 hours of delivery."
-                ),
-                status=400,
-            )
-
-        # -------------------------------------------------
-        # CHECK EXISTING RETURN REQUEST
-        # -------------------------------------------------
-
-        if hasattr(order, "return_request"):
-            return error_response(
-                message=(
-                    "Return request already exists."
-                ),
-                status=400,
-            )
-
-        # -------------------------------------------------
-        # VALIDATE RETURN IMAGES
-        # -------------------------------------------------
+        # Keep object-level permission checking.
+        self.get_object()
 
         images = request.FILES.getlist("images")
 
@@ -959,10 +896,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                 status=400,
             )
 
-        # -------------------------------------------------
-        # VALIDATE RETURN REQUEST
-        # -------------------------------------------------
-
         serializer = ReturnRequestSerializer(
             data=request.data
         )
@@ -971,11 +904,81 @@ class OrderViewSet(viewsets.ModelViewSet):
             raise_exception=True
         )
 
-        # -------------------------------------------------
-        # CREATE RETURN REQUEST + IMAGES ATOMICALLY
-        # -------------------------------------------------
-
         with transaction.atomic():
+
+            # Lock the order so concurrent return requests
+            # for the same order are processed one at a time.
+            order = (
+                Order.objects
+                .select_for_update()
+                .get(pk=pk)
+            )
+
+            if order.status != "Delivered":
+                return error_response(
+                    message=(
+                        "Only delivered orders can be returned."
+                    ),
+                    status=400,
+                )
+
+            # -------------------------------------------------
+            # 48 HOURS RETURN WINDOW
+            # -------------------------------------------------
+
+            delivered_history = (
+                order.status_history
+                .filter(status="Delivered")
+                .order_by("-changed_at")
+                .first()
+            )
+
+            if not delivered_history:
+                return error_response(
+                    message=(
+                        "Delivery time could not be determined."
+                    ),
+                    status=400,
+                )
+
+            delivered_at = delivered_history.changed_at
+            now = timezone.now()
+
+            return_deadline = (
+                delivered_at + timedelta(hours=48)
+            )
+
+            # -------------------------------------------------
+            # RETURN WINDOW EXPIRED
+            # -------------------------------------------------
+
+            if now > return_deadline:
+                return error_response(
+                    message=(
+                        "Return period has expired. "
+                        "Returns are only accepted within "
+                        "48 hours of delivery."
+                    ),
+                    status=400,
+                )
+
+            # -------------------------------------------------
+            # CHECK EXISTING RETURN REQUEST
+            # -------------------------------------------------
+
+            if ReturnRequest.objects.filter(
+                order=order
+            ).exists():
+                return error_response(
+                    message=(
+                        "Return request already exists."
+                    ),
+                    status=400,
+                )
+
+            # -------------------------------------------------
+            # CREATE RETURN REQUEST + IMAGES ATOMICALLY
+            # -------------------------------------------------
 
             return_request = serializer.save(
                 order=order
