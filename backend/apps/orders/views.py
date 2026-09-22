@@ -260,6 +260,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     .filter(user=request.user)
                     .select_related("product")
                     .select_for_update()
+                    .order_by("product_id")
                 )
 
                 if not cart_items:
