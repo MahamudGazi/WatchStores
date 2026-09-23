@@ -51,3 +51,7 @@ htmlcov/
 # Temporary
 *.tmp
 *.temp
+# Database backups / fixtures
+*.sql
+*_data.json
+backend/watchstore_data*.json
