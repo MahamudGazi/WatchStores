@@ -935,16 +935,21 @@ class OrderViewSet(viewsets.ModelViewSet):
 
                 items = (
                     order.items
-                    .select_related("product")
                     .select_for_update()
                     .order_by("product_id")
                 )
 
                 for item in items:
 
-                    item.product.stock += item.quantity
+                    product = (
+                        Product.objects
+                        .select_for_update()
+                        .get(pk=item.product_id)
+                    )
 
-                    item.product.save(
+                    product.stock += item.quantity
+
+                    product.save(
                         update_fields=["stock"]
                     )
 
@@ -970,6 +975,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             message="Order cancelled successfully."
         )
 
+    
     @action(
         detail=True,
         methods=["post"],
